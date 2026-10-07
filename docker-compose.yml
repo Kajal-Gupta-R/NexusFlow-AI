@@ -1,23 +1,22 @@
 services:
   postgres:
     image: pgvector/pgvector:pg16
-    container_name: nexusflow-postgres
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-nexusflow}
       POSTGRES_USER: ${POSTGRES_USER:-nexusflow}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-locally}
-    ports:
-      - "5432:5432"
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
     volumes:
       - nexusflow-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   redis:
     image: redis:7-alpine
-    container_name: nexusflow-redis
     restart: unless-stopped
-    ports:
-      - "6379:6379"
     volumes:
       - nexusflow-redis-data:/data
     healthcheck:
@@ -29,39 +28,50 @@ services:
   backend:
     build:
       context: ./backend
-    env_file:
-      - ./backend/.env
     environment:
-      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
-      DATABASE_URL: postgresql+asyncpg://nexusflow:${POSTGRES_PASSWORD:-change-me-locally}@postgres:5432/${POSTGRES_DB:-nexusflow}
-      REDIS_URL: redis://redis:6379/0
       APP_ENV: production
-      AUTH_SECRET: ${AUTH_SECRET:-change-this-auth-secret-in-production}
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?Set OPENAI_API_KEY in .env}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-nexusflow}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-nexusflow}
+      REDIS_URL: redis://redis:6379/0
+      AUTH_SECRET: ${AUTH_SECRET:?Set AUTH_SECRET in .env}
+      AUTH_TOKEN_TTL: ${AUTH_TOKEN_TTL:-86400}
+      CORS_ORIGINS: ${CORS_ORIGINS:?Set CORS_ORIGINS in .env}
     depends_on:
       postgres:
-        condition: service_started
+        condition: service_healthy
       redis:
         condition: service_healthy
-    ports:
-      - "8000:8000"
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
       interval: 10s
       timeout: 5s
       retries: 5
 
+  migrate:
+    build:
+      context: ./backend
+    command: ["alembic", "-c", "alembic.ini", "upgrade", "head"]
+    restart: "no"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-nexusflow}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-nexusflow}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   worker:
     build:
       context: ./backend
-    env_file:
-      - ./backend/.env
     environment:
-      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
-      DATABASE_URL: postgresql+asyncpg://nexusflow:${POSTGRES_PASSWORD:-change-me-locally}@postgres:5432/${POSTGRES_DB:-nexusflow}
-      REDIS_URL: redis://redis:6379/0
       APP_ENV: production
-      AUTH_SECRET: ${AUTH_SECRET:-change-this-auth-secret-in-production}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?Set OPENAI_API_KEY in .env}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-nexusflow}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-nexusflow}
+      REDIS_URL: redis://redis:6379/0
+      AUTH_SECRET: ${AUTH_SECRET:?Set AUTH_SECRET in .env}
+      AUTH_TOKEN_TTL: ${AUTH_TOKEN_TTL:-86400}
     command: ["celery", "-A", "app.tasks.celery_app.celery_app", "worker", "--loglevel=INFO", "--concurrency=2"]
     depends_on:
       redis:
@@ -73,13 +83,29 @@ services:
     build:
       context: ./frontend
       args:
-        VITE_API_BASE_URL: http://localhost:8000
+        VITE_API_BASE_URL: /api
     depends_on:
       backend:
         condition: service_healthy
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:?Set DOMAIN in .env to a DNS name pointing to this server}
     ports:
-      - "5173:80"
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - frontend
 
 volumes:
   nexusflow-postgres-data:
   nexusflow-redis-data:
+  caddy-data:
+  caddy-config:

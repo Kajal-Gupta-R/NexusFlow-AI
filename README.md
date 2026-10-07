@@ -117,23 +117,27 @@ npm run dev -- --host 127.0.0.1
 
 Open `http://127.0.0.1:5173`.
 
-## Docker deployment path
+## VPS deployment with Docker Compose
 
-Create `backend\.env` first, set a strong `AUTH_SECRET` and a real OpenAI key, then:
+This deployment uses Caddy for automatic HTTPS, serves the frontend and API on one domain, and keeps PostgreSQL and Redis private to the Docker network. Point the domain's DNS `A`/`AAAA` record at the VPS and allow inbound TCP ports 80/443 (and UDP 443 for HTTP/3).
+
+Copy `.env.example` to `.env`, then set `DOMAIN`, `OPENAI_API_KEY`, `POSTGRES_PASSWORD`, `AUTH_SECRET`, and `CORS_ORIGINS` to real values. Generate long random secrets, for example:
 
 ```powershell
-docker compose build
-docker compose up -d
+py -c "import secrets; print(secrets.token_hex(32))"
+```
+
+Use a 64-character hex value for each password/secret, and set `CORS_ORIGINS` to include `https://<your-domain>`. Do not commit `.env`.
+
+From the repository root on the VPS:
+
+```sh
+docker compose up -d --build
 docker compose ps
+docker compose logs -f backend worker caddy
 ```
 
-Apply migrations against the running API image or a one-off backend container before first use:
-
-```powershell
-docker compose run --rm backend alembic -c alembic.ini upgrade head
-```
-
-The compose stack exposes frontend port `5173` and API port `8000`. The production worker uses concurrency 2. Docker deployment was not executed in this environment because Docker Desktop was unavailable.
+The migration service runs before the API starts. Visit `https://<your-domain>` after Caddy obtains its certificate. PostgreSQL data, Redis data, and TLS certificates persist in named Docker volumes. Do not use `docker compose down -v` unless you intend to delete that data. An OpenAI API key is required for chat and orchestration.
 
 ## API overview
 

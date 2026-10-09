@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from app.database.models import Base
 _engine: AsyncEngine | None = None
 _session_factory: async_sessionmaker[AsyncSession] | None = None
 _database_initialized = False
+_database_init_lock = asyncio.Lock()
 
 
 def get_engine() -> AsyncEngine:
@@ -41,8 +43,10 @@ def get_session_factory() -> async_sessionmaker[AsyncSession]:
 async def get_db() -> AsyncIterator[AsyncSession]:
     global _database_initialized
     if not _database_initialized:
-        await initialize_database()
-        _database_initialized = True
+        async with _database_init_lock:
+            if not _database_initialized:
+                await initialize_database()
+                _database_initialized = True
     async with get_session_factory()() as session:
         yield session
 
